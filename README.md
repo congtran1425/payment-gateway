@@ -38,15 +38,15 @@ Hệ thống gồm 2 thành phần:
 
 ## 2.2 Sơ đồ luồng hoạt động
 
-[ Merchant Website ]
-|
-| POST /create_payment
-v
-[ Payment Gateway Service ]
-|
-| Trả về payment_url
-v
-[ Người dùng mở /pay/:transaction_id ]
+`[ Merchant Website ]`
+`|`
+`| POST /create_payment`
+`v`
+`[ Payment Gateway Service ]`
+`|`
+`| Trả về payment_url`
+`v`
+`[ Người dùng mở /pay/:transaction_id ]`
 
 
 ---
