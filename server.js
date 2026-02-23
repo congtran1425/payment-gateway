@@ -1,50 +1,42 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const axios = require("axios");
 
 const app = express();
 const PORT = 4000;
 
 app.use(express.json());
 
-// Đường dẫn tới file JSON
 const dataPath = path.join(__dirname, "data", "transactions.json");
+const WEBHOOK_SECRET = "supersecretkey";
 
-// Hàm đọc dữ liệu
+// ======================
+// READ / WRITE JSON
+// ======================
 function readTransactions() {
-  const data = fs.readFileSync(dataPath);
-  return JSON.parse(data);
+  if (!fs.existsSync(dataPath)) {
+    fs.writeFileSync(dataPath, "[]");
+  }
+  return JSON.parse(fs.readFileSync(dataPath));
 }
 
-// Hàm ghi dữ liệu
 function writeTransactions(data) {
   fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
 }
 
-// Tạo transaction_id ngẫu nhiên
 function generateTransactionId() {
   return "TX" + Date.now();
 }
 
-/*
-  ===========================
-  POST /create_payment
-  ===========================
-*/
+// ======================
+// CREATE PAYMENT
+// ======================
 app.post("/create_payment", (req, res) => {
   const { order_id, amount, method } = req.body;
 
-  // Validation đơn giản
   if (!order_id || !amount || !method) {
-    return res.status(400).json({
-      error: "Missing required fields"
-    });
-  }
-
-  if (amount <= 0) {
-    return res.status(400).json({
-      error: "Amount must be greater than 0"
-    });
+    return res.status(400).json({ error: "Missing fields" });
   }
 
   const transaction_id = generateTransactionId();
@@ -55,48 +47,107 @@ app.post("/create_payment", (req, res) => {
     amount,
     method,
     status: "CREATED",
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
   };
 
   const transactions = readTransactions();
   transactions.push(newTransaction);
   writeTransactions(transactions);
 
-  const payment_url = `http://localhost:${PORT}/pay/${transaction_id}`;
+  console.log(`[Gateway] Created transaction ${transaction_id}`);
 
   res.json({
     transaction_id,
-    payment_url,
-    status: "CREATED"
+    payment_url: `http://localhost:${PORT}/pay/${transaction_id}`
   });
 });
 
-/*
-  ===========================
-  GET /pay/:transaction_id
-  ===========================
-*/
-app.get("/pay/:transaction_id", (req, res) => {
-  const { transaction_id } = req.params;
-
-  const transactions = readTransactions();
-  const transaction = transactions.find(
-    t => t.transaction_id === transaction_id
-  );
-
-  if (!transaction) {
-    return res.status(404).send("Transaction not found");
-  }
+// ======================
+// PAYMENT PAGE
+// ======================
+app.get("/pay/:id", (req, res) => {
+  const { id } = req.params;
 
   res.send(`
-    <h1>Payment Gateway</h1>
-    <p>Bạn đang thanh toán cho giao dịch: <b>${transaction.transaction_id}</b></p>
-    <p>Order ID: ${transaction.order_id}</p>
-    <p>Amount: ${transaction.amount}</p>
-    <p>Method: ${transaction.method}</p>
-    <p>Status: ${transaction.status}</p>
+    <h2>Payment Page</h2>
+    <p>Transaction: ${id}</p>
+
+    <button onclick="updateStatus('SUCCESS')">
+      Thanh toán thành công
+    </button>
+
+    <button onclick="updateStatus('FAILED')">
+      Thanh toán thất bại
+    </button>
+
+    <script>
+      function updateStatus(status) {
+        fetch("/update_status/${id}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status })
+        })
+        .then(res => res.json())
+        .then(data => alert(data.message));
+      }
+    </script>
   `);
 });
+
+// ======================
+// UPDATE STATUS + WEBHOOK
+// ======================
+app.post("/update_status/:id", async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+
+  let transactions = readTransactions();
+  const transaction = transactions.find(t => t.transaction_id === id);
+
+  if (!transaction) {
+    return res.status(404).json({ message: "Transaction not found" });
+  }
+
+  transaction.status = status;
+  transaction.updated_at = new Date().toISOString();
+  writeTransactions(transactions);
+
+  console.log(`[Gateway] Status updated: ${id} → ${status}`);
+
+  sendWebhookWithRetry(id, status);
+
+  res.json({ message: "Status updated" });
+});
+
+// ======================
+// WEBHOOK RETRY
+// ======================
+async function sendWebhookWithRetry(id, status, attempt = 1) {
+  try {
+    console.log(`[Gateway] Sending webhook (attempt ${attempt})`);
+
+    await axios.post("http://localhost:3000/webhook", {
+      transaction_id: id,
+      status: status
+    }, {
+      headers: {
+        "x-signature": WEBHOOK_SECRET
+      }
+    });
+
+    console.log("[Gateway] Webhook sent successfully");
+
+  } catch (error) {
+    console.log("[Gateway] Webhook failed");
+
+    if (attempt < 3) {
+      setTimeout(() => {
+        sendWebhookWithRetry(id, status, attempt + 1);
+      }, 5000);
+    }
+  }
+}
 
 app.listen(PORT, () => {
   console.log(`Payment Gateway running on port ${PORT}`);
